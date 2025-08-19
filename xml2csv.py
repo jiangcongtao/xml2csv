@@ -20,6 +20,10 @@ Behavior inferred from provided samples:
 - Accept one or more XML files as positional arguments and write corresponding CSV
   files with the same base name and a .csv extension in the same directory.
 
+Enhancements:
+- Optionally list the columns that would be produced (per-file or merged across inputs)
+- Optionally select a subset of columns to write, preserving requested order
+
 Note: This is a general-purpose heuristic to match the examples provided. XMLs with
 multiple different repeating groups at the same level or ambiguous structures may
 require explicit configuration which is out of scope here.
@@ -70,6 +74,25 @@ def parse_args() -> argparse.Namespace:
         dest="delimiter",
         default=",",
         help="CSV delimiter (default: ,)",
+    )
+    parser.add_argument(
+        "--list-columns",
+        dest="list_columns",
+        action="store_true",
+        help=(
+            "List the column names that would be generated and exit. If --merge-into is provided, "
+            "lists the merged union across inputs; otherwise lists per file."
+        ),
+    )
+    parser.add_argument(
+        "--select-columns",
+        dest="select_columns",
+        action="append",
+        default=None,
+        help=(
+            "Comma-separated column names to include in the output CSV. Can be provided multiple times. "
+            "Names must match the resolved header names (after disambiguation)."
+        ),
     )
     return parser.parse_args()
 
@@ -315,7 +338,13 @@ def extract_rows_for_element(
     return rows
 
 
-def convert_xml_to_csv(input_path: Path, output_dir: Optional[Path], encoding: str, delimiter: str) -> Path:
+def convert_xml_to_csv(
+    input_path: Path,
+    output_dir: Optional[Path],
+    encoding: str,
+    delimiter: str,
+    selected_columns: Optional[List[str]] = None,
+) -> Path:
     tree = ET.parse(str(input_path))
     root = tree.getroot()
 
@@ -336,12 +365,23 @@ def convert_xml_to_csv(input_path: Path, output_dir: Optional[Path], encoding: s
     out_dir = output_dir if output_dir is not None else input_path.parent
     out_path = out_dir / (input_path.stem + ".csv")
 
+    # Determine columns to write
+    columns_to_write: List[str]
+    if selected_columns:
+        present = [c for c in selected_columns if c in header_order]
+        missing = [c for c in selected_columns if c not in header_order]
+        if missing:
+            print(f"Warning: skipping unknown columns for {input_path.name}: {', '.join(missing)}")
+        columns_to_write = present
+    else:
+        columns_to_write = header_order
+
     # Write CSV
     with out_path.open("w", encoding=encoding, newline="") as f:
         writer = csv.writer(f, delimiter=delimiter)
-        writer.writerow(header_order)
+        writer.writerow(columns_to_write)
         for row in table_rows:
-            writer.writerow([row.get(col, "") for col in header_order])
+            writer.writerow([row.get(col, "") for col in columns_to_write])
 
     return out_path
 
@@ -366,6 +406,17 @@ def extract_table_from_file(
     return rows
 
 
+def normalize_selected_columns(select_columns_args: Optional[List[str]]) -> Optional[List[str]]:
+    if not select_columns_args:
+        return None
+    selected: List[str] = []
+    for part in select_columns_args:
+        if not part:
+            continue
+        selected.extend([c.strip() for c in part.split(",") if c.strip()])
+    return selected or None
+
+
 def main() -> None:
     args = parse_args()
     inputs: List[Path] = [Path(p).expanduser().resolve() for p in args.inputs]
@@ -373,6 +424,8 @@ def main() -> None:
     if args.output_dir is not None:
         output_dir = Path(args.output_dir).expanduser().resolve()
         output_dir.mkdir(parents=True, exist_ok=True)
+
+    selected_columns = normalize_selected_columns(args.select_columns)
 
     if args.merge_into is not None:
         # Merge all inputs into a single CSV
@@ -389,6 +442,11 @@ def main() -> None:
             except Exception as exc:
                 print(f"Failed to parse {inp}: {exc}")
 
+        # If only listing columns, print and exit
+        if args.list_columns:
+            print(",".join(merged_header_order))
+            return
+
         # Determine output path for merged file
         merge_path = Path(args.merge_into).expanduser().resolve()
         if merge_path.is_dir():
@@ -396,11 +454,22 @@ def main() -> None:
             merge_path = merge_path / "merged.csv"
         merge_path.parent.mkdir(parents=True, exist_ok=True)
 
+        # Determine columns to write
+        columns_to_write: List[str]
+        if selected_columns:
+            present = [c for c in selected_columns if c in merged_header_order]
+            missing = [c for c in selected_columns if c not in merged_header_order]
+            if missing:
+                print(f"Warning: skipping unknown columns in merged output: {', '.join(missing)}")
+            columns_to_write = present
+        else:
+            columns_to_write = merged_header_order
+
         with merge_path.open("w", encoding=args.encoding, newline="") as f:
             writer = csv.writer(f, delimiter=args.delimiter)
-            writer.writerow(merged_header_order)
+            writer.writerow(columns_to_write)
             for row in merged_rows:
-                writer.writerow([row.get(col, "") for col in merged_header_order])
+                writer.writerow([row.get(col, "") for col in columns_to_write])
         print(f"Wrote merged CSV: {merge_path}")
     else:
         # One CSV per input
@@ -409,7 +478,32 @@ def main() -> None:
                 print(f"Skipping non-existent file: {inp}")
                 continue
             try:
-                out_path = convert_xml_to_csv(inp, output_dir, args.encoding, args.delimiter)
+                # Build header (and rows) first to support listing/selection
+                header_order: List[str] = []
+                header_paths: Dict[str, PathKey] = {}
+                rows = extract_table_from_file(inp, header_order, header_paths)
+
+                if args.list_columns:
+                    print(f"{inp.name}: {','.join(header_order)}")
+                    continue
+
+                # Determine columns to write for this file
+                columns_to_write: Optional[List[str]] = None
+                if selected_columns:
+                    present = [c for c in selected_columns if c in header_order]
+                    missing = [c for c in selected_columns if c not in header_order]
+                    if missing:
+                        print(f"Warning: skipping unknown columns for {inp.name}: {', '.join(missing)}")
+                    columns_to_write = present
+
+                # Write CSV using the precomputed header/rows to avoid recomputation
+                out_dir = output_dir if output_dir is not None else inp.parent
+                out_path = out_dir / (inp.stem + ".csv")
+                with out_path.open("w", encoding=args.encoding, newline="") as f:
+                    writer = csv.writer(f, delimiter=args.delimiter)
+                    writer.writerow(columns_to_write or header_order)
+                    for row in rows:
+                        writer.writerow([row.get(col, "") for col in (columns_to_write or header_order)])
                 print(f"Wrote: {out_path}")
             except Exception as exc:
                 print(f"Failed to convert {inp}: {exc}")

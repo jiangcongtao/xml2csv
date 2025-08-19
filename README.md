@@ -8,6 +8,7 @@ Convert XML file(s) into CSV by flattening repeating child elements. Designed to
 - Flattens nested structures; expands nested repeating groups into multiple rows
 - Stable header union across all rows (and across files when merging)
 - Supports converting one or many files, or merging many inputs into a single CSV
+ - List predicted columns or select a subset of columns to write
 
 ## Installation
 The tool is a single Python script and uses only the standard library.
@@ -35,6 +36,16 @@ python3 xml2csv.py --merge-into /path/to/out input1.xml input2.xml
 
 # Control CSV delimiter and I/O encoding
 python3 xml2csv.py --delimiter ';' --encoding utf-8 input.xml
+
+# List columns without writing CSVs (per file)
+python3 xml2csv.py --list-columns input1.xml input2.xml
+
+# List merged union of columns across inputs
+python3 xml2csv.py --merge-into /does/not/matter --list-columns input1.xml input2.xml
+
+# Write only a selected subset of columns (requested order preserved)
+python3 xml2csv.py --select-columns fa1,fa2 --select-columns fb1 input1.xml
+python3 xml2csv.py --merge-into /path/to/out/all_rows.csv --select-columns fa1,fb1 input1.xml input2.xml
 ```
 
 ### Options
@@ -43,6 +54,8 @@ python3 xml2csv.py --delimiter ';' --encoding utf-8 input.xml
 - **`--output-dir DIR`**: Directory for per-input CSVs (default: same directory as each XML)
 - **`--delimiter`**: CSV delimiter (default: `,`)
 - **`--encoding`**: Read/write text encoding (default: `utf-8`)
+- **`--list-columns`**: List columns that would be generated and exit. With `--merge-into`, lists merged union; otherwise lists per file
+- **`--select-columns`**: Comma-separated column names to include in output. Can be provided multiple times; names must match resolved header names (after disambiguation)
 
 ## Behavior model (requirements)
 - **Row unit detection**: The script scans in document order to find the first element that has a repeated child tag. Each occurrence of that repeated tag becomes a row. If no repeating group exists, the root yields a single row.
@@ -51,6 +64,7 @@ python3 xml2csv.py --delimiter ';' --encoding utf-8 input.xml
 - **Nested repeating groups**: If the row element contains nested repeating groups, the script expands rows across those groups (cartesian expansion). If a nested repeating group is missing, related columns are blank (i.e., the base row is still emitted).
 - **Header**: The CSV header is the union of all encountered scalar leaf field names across all rows (and across all inputs when merging), in encounter order: container fields first, then row-level, then deeper nested fields.
 - **Column naming**: By default a column is named by its leaf tag. On collision, a dotted path (e.g., `parent.child.leaf`) is used; on further collision, numeric suffixes are appended.
+- **Column listing/selection**: You can list the columns that would be generated without writing CSVs. You can also restrict output to a subset of columns; missing columns are ignored with a warning, and the requested order is preserved.
 
 ## Examples
 
