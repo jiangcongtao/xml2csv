@@ -163,18 +163,31 @@ def find_next_unselected_repeating_group(
     if path_prefix is None:
         path_prefix = (root.tag,)
 
+    # First, check for unselected repeating groups at the current level
     groups_here = compute_repeating_group_keys(root, path_prefix)
     for group_key, _tag, children in groups_here:
         if group_key not in selection:
             return group_key, children
 
-    # Recurse into non-repeating children only (repeating groups handled above)
-    for child in list(root):
-        siblings = get_children_by_tag(root).get(child.tag, [])
-        if len(siblings) == 1:
-            found = find_next_unselected_repeating_group(child, selection, path_prefix + (child.tag,))
-            if found is not None:
+    # If all repeating groups at this level are selected, recurse into children
+    children_by_tag = get_children_by_tag(root)
+    for tag, children in children_by_tag.items():
+        child_path = path_prefix + (tag,)
+        if len(children) > 1:
+            # This is a repeating group, which we already know is in 'selection'
+            group_key = child_path
+            if group_key in selection:
+                idx = selection[group_key]
+                if 0 <= idx < len(children):
+                    found = find_next_unselected_repeating_group(children[idx], selection, child_path)
+                    if found:
+                        return found
+        else:
+            # Non-repeating child, recurse
+            found = find_next_unselected_repeating_group(children[0], selection, child_path)
+            if found:
                 return found
+
     return None
 
 
